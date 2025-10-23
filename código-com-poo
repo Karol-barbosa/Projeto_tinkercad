@@ -1,0 +1,202 @@
+#include <LiquidCrystal_I2C.h>
+
+class RGBLed {
+  private:
+    int redPin, greenPin, bluePin;
+    int redValue, greenValue, blueValue;
+
+  public:
+    RGBLed(int rPin, int gPin, int bPin) {
+      redPin = rPin;
+      greenPin = gPin;
+      bluePin = bPin;
+      pinMode(redPin, OUTPUT);
+      pinMode(greenPin, OUTPUT);
+      pinMode(bluePin, OUTPUT);
+      setColor(0, 0, 0);
+    }
+
+    void setColor(int r, int g, int b) {
+      redValue = r;
+      greenValue = g;
+      blueValue = b;
+      analogWrite(redPin, redValue);
+      analogWrite(greenPin, greenValue);
+      analogWrite(bluePin, blueValue);
+    }
+
+    void updateColor(int sensorValue, int minVal, int maxVal) {
+      int point1 = map(255, 0, 1023, minVal, maxVal);
+      int point2 = map(511, 0, 1023, minVal, maxVal);
+      int point3 = map(766, 0, 1023, minVal, maxVal);
+
+      int r = 0, g = 0, b = 0;
+
+      if (sensorValue >= minVal && sensorValue <= point1) {
+        r = map(sensorValue, minVal, point1, 255, 127);
+        b = map(sensorValue, minVal, point1, 0, 127);
+        g = 0;
+      } else if (sensorValue > point1 && sensorValue <= point2) {
+        r = map(sensorValue, point1, point2, 127, 0);
+        b = map(sensorValue, point1, point2, 127, 255);
+      } else if (sensorValue > point2 && sensorValue <= point3) {
+        b = map(sensorValue, point2, point3, 255, 127);
+        g = map(sensorValue, point2, point3, 0, 127);
+      } else if (sensorValue > point3 && sensorValue <= maxVal) {
+        b = map(sensorValue, point3, maxVal, 127, 0);
+        g = map(sensorValue, point3, maxVal, 127, 255);
+      }
+
+      setColor(r, g, b);
+    }
+};
+
+// =================== Classe PlantMonitor ===================
+class PlantMonitor {
+  private:
+    const int sensorPin;
+    const int blinkLedPin;
+    const int sensorMin;
+    const int sensorMax;
+    const int blinkDelayFast;
+    const int blinkDelaySlow;
+    const int moistureBlinkOn;
+    const int moistureVeryDry;
+
+    int sensorValue;
+    int moisturePercent;
+    int previousMoisturePercent;
+
+    unsigned long lastRgbUpdate;
+    const unsigned long RGB_UPDATE_INTERVAL = 100;
+
+    LiquidCrystal_I2C lcd;
+    RGBLed rgb;
+
+  public:
+    PlantMonitor(int sPin, int blinkPin, int minVal, int maxVal,
+                 int fastDelay, int slowDelay,
+                 int blinkOn, int veryDry,
+                 RGBLed led)
+      : sensorPin(sPin),
+        blinkLedPin(blinkPin),
+        sensorMin(minVal),
+        sensorMax(maxVal),
+        blinkDelayFast(fastDelay),
+        blinkDelaySlow(slowDelay),
+        moistureBlinkOn(blinkOn),
+        moistureVeryDry(veryDry),
+        lcd(0x27, 16, 2),
+        rgb(led)
+    {
+      sensorValue = 0;
+      moisturePercent = 0;
+      previousMoisturePercent = -1;
+      lastRgbUpdate = 0;
+      pinMode(blinkLedPin, OUTPUT);
+    }
+
+    void begin() {
+      Serial.begin(9600);
+      lcd.init();
+      lcd.backlight();
+      lcd.print("Plant Monitor");
+      lcd.setCursor(0, 1);
+      lcd.print("Initializing...");
+      delay(2000);
+    }
+
+    void update() {
+      unsigned long currentMillis = millis();
+      sensorValue = analogRead(sensorPin);
+      int constrainedValue = constrain(sensorValue, sensorMin, sensorMax);
+      moisturePercent = map(sensorValue, sensorMin, sensorMax, 0, 100);
+
+      if (currentMillis - lastRgbUpdate >= RGB_UPDATE_INTERVAL) {
+        lastRgbUpdate = currentMillis;
+        rgb.updateColor(constrainedValue, sensorMin, sensorMax);
+      }
+
+      controlBlinkLed(constrainedValue);
+      updateLcdIfNeeded();
+      printSerial(constrainedValue);
+    }
+
+  private:
+    void controlBlinkLed(int constrainedValue) {
+      if (constrainedValue < moistureBlinkOn) {
+        int blinkDelay = map(constrainedValue, moistureVeryDry, moistureBlinkOn, blinkDelayFast, blinkDelaySlow);
+        blinkDelay = constrain(blinkDelay, blinkDelayFast, blinkDelaySlow);
+        digitalWrite(blinkLedPin, HIGH);
+        delay(blinkDelay);
+        digitalWrite(blinkLedPin, LOW);
+        delay(blinkDelay);
+      } else {
+        digitalWrite(blinkLedPin, LOW);
+      }
+    }
+
+    void updateLcdIfNeeded() {
+      if (moisturePercent != previousMoisturePercent) {
+        lcd.clear();
+        lcd.setCursor(0, 0);
+
+        if (moisturePercent <= 10) {
+          lcd.print("CRITICAL DRY");
+        } else if (moisturePercent <= 25) {
+          lcd.print("I'm very thirsty");
+        } else if (moisturePercent <= 45) {
+          lcd.print("Water me, please");
+        } else if (moisturePercent <= 65) {
+          lcd.print("Moisture good");
+        } else {
+          lcd.print("Optimal moisture");
+        }
+
+        lcd.setCursor(0, 1);
+        lcd.print(moisturePercent);
+        lcd.print("% MOISTURE");
+
+        previousMoisturePercent = moisturePercent;
+      }
+    }
+
+    void printSerial(int constrainedValue) {
+      Serial.print("Sensor Value: ");
+      Serial.print(sensorValue);
+      Serial.print(" (");
+      Serial.print(moisturePercent);
+      Serial.println("% moisture)");
+    }
+};
+
+// =================== Instância e Setup ===================
+
+// Constantes do sistema
+const int SENSOR_PIN = A0;
+const int RED_PIN = 11;
+const int GREEN_PIN = 9;
+const int BLUE_PIN = 10;
+const int BLINK_LED_PIN = 6;
+const int SENSOR_MIN_VALUE = 0;
+const int SENSOR_MAX_VALUE = 876;
+const int BLINK_DELAY_SLOW = 1000;
+const int BLINK_DELAY_FAST = 200;
+const int MOISTURE_THRESHOLD_BLINK_ON = map(75, 0, 100, SENSOR_MIN_VALUE, SENSOR_MAX_VALUE);
+const int MOISTURE_THRESHOLD_VERY_DRY = map(20, 0, 100, SENSOR_MIN_VALUE, SENSOR_MAX_VALUE);
+
+// Cria objetos
+RGBLed rgb(RED_PIN, GREEN_PIN, BLUE_PIN);
+PlantMonitor monitor(SENSOR_PIN, BLINK_LED_PIN, SENSOR_MIN_VALUE, SENSOR_MAX_VALUE,
+                     BLINK_DELAY_FAST, BLINK_DELAY_SLOW,
+                     MOISTURE_THRESHOLD_BLINK_ON, MOISTURE_THRESHOLD_VERY_DRY,
+                     rgb);
+
+// =================== Setup e Loop ===================
+void setup() {
+  monitor.begin();
+}
+
+void loop() {
+  monitor.update();
+}
